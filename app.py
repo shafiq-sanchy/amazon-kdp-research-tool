@@ -33,13 +33,16 @@ if 'api_keys' not in st.session_state:
         'megallm_counter': 0
     }
 
+if 'ai_service' not in st.session_state:
+    st.session_state.ai_service = 'gemini'
+
 class APIManager:
     """Manages API calls with rotation and rate limiting"""
     
     def __init__(self):
         self.session = requests.Session()
         self.last_call_time = {}
-        self.min_interval = 1.0  # Minimum seconds between calls
+        self.min_interval = 2.0  # Increased to avoid rate limits
         
     def rotate_api_key(self, service):
         """Rotate API keys to avoid rate limits"""
@@ -70,22 +73,22 @@ class APIManager:
                     if api_key:
                         headers['x-rapidapi-key'] = api_key
                 
-                response = self.session.get(url, headers=headers, params=params, timeout=10)
+                response = self.session.get(url, headers=headers, params=params, timeout=15)
                 self.last_call_time[service] = time.time()
                 
                 if response.status_code == 200:
                     return response.json()
                 elif response.status_code == 429:  # Rate limited
-                    time.sleep(2 ** attempt)  # Exponential backoff
+                    time.sleep(3 ** attempt)  # Increased backoff
                     continue
                 else:
-                    st.error(f"API Error: {response.status_code}")
+                    st.error(f"API Error: {response.status_code} - {response.text}")
                     return None
             except Exception as e:
                 if attempt == max_retries - 1:
                     st.error(f"Request failed: {str(e)}")
                     return None
-                time.sleep(1)
+                time.sleep(2)
         
         return None
 
@@ -207,7 +210,7 @@ class AIAnalyzer:
         """Analyze data using Google Gemini"""
         api_key = self.api_manager.rotate_api_key('gemini')
         if not api_key:
-            return "No Gemini API key available. Please add one in the API Settings."
+            return "No Gemini API key available. Please add one in API Settings."
         
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
         
@@ -220,20 +223,20 @@ class AIAnalyzer:
         }
         
         try:
-            response = requests.post(url, headers=headers, json=data, timeout=10)
+            response = requests.post(url, headers=headers, json=data, timeout=15)
             if response.status_code == 200:
                 result = response.json()
                 return result['candidates'][0]['content']['parts'][0]['text']
+            else:
+                return f"Gemini API Error: {response.status_code}"
         except Exception as e:
-            st.error(f"Gemini API Error: {str(e)}")
-        
-        return "Analysis unavailable"
+            return f"Gemini API Error: {str(e)}"
     
     def analyze_with_chatgpt(self, prompt):
         """Analyze data using OpenAI ChatGPT"""
         api_key = self.api_manager.rotate_api_key('chatgpt')
         if not api_key:
-            return "No ChatGPT API key available. Please add one in the API Settings."
+            return "No ChatGPT API key available. Please add one in API Settings."
         
         url = "https://api.openai.com/v1/chat/completions"
         
@@ -250,20 +253,20 @@ class AIAnalyzer:
         }
         
         try:
-            response = requests.post(url, headers=headers, json=data, timeout=10)
+            response = requests.post(url, headers=headers, json=data, timeout=15)
             if response.status_code == 200:
                 result = response.json()
                 return result['choices'][0]['message']['content']
+            else:
+                return f"ChatGPT API Error: {response.status_code}"
         except Exception as e:
-            st.error(f"ChatGPT API Error: {str(e)}")
-        
-        return "Analysis unavailable"
+            return f"ChatGPT API Error: {str(e)}"
     
     def analyze_with_megallm(self, prompt):
         """Analyze data using MegaLLM"""
         api_key = self.api_manager.rotate_api_key('megallm')
         if not api_key:
-            return "No MegaLLM API key available. Please add one in the API Settings."
+            return "No MegaLLM API key available. Please add one in API Settings."
         
         url = "https://api.megallm.com/v1/chat/completions"
         
@@ -280,14 +283,14 @@ class AIAnalyzer:
         }
         
         try:
-            response = requests.post(url, headers=headers, json=data, timeout=10)
+            response = requests.post(url, headers=headers, json=data, timeout=15)
             if response.status_code == 200:
                 result = response.json()
                 return result['choices'][0]['message']['content']
+            else:
+                return f"MegaLLM API Error: {response.status_code}"
         except Exception as e:
-            st.error(f"MegaLLM API Error: {str(e)}")
-        
-        return "Analysis unavailable"
+            return f"MegaLLM API Error: {str(e)}"
     
     def analyze_market_opportunity(self, keyword, products, ai_service="gemini"):
         """Analyze market opportunity using AI"""
@@ -456,6 +459,7 @@ def api_settings_page():
                         st.session_state.api_keys['megallm'].append(key)
             
             st.success("API keys uploaded successfully!")
+            st.rerun()
         except Exception as e:
             st.error(f"Error processing file: {str(e)}")
     
@@ -477,10 +481,14 @@ def api_settings_page():
     ai_service = st.selectbox(
         "Select AI service for analysis:",
         ["gemini", "chatgpt", "megallm"],
-        index=0,
+        index=["gemini", "chatgpt", "megallm"].index(st.session_state.ai_service),
         help="This will be used for AI-powered analysis"
     )
     st.session_state.ai_service = ai_service
+    
+    if st.button("Save Settings"):
+        st.success("Settings saved successfully!")
+        st.rerun()
 
 # Main UI
 def main():
@@ -682,7 +690,7 @@ def competitor_analysis_page(components, ai_service):
                                 st.write(review.get('review_comment', 'N/A')[:200] + "...")
                                 st.write("---")
                     else:
-                        st.error("Product not found. Check the ASIN and try again.")
+                        st.error("Product not found. Check ASIN and try again.")
     
     else:  # Search by Keyword
         keyword = st.text_input("Enter keyword:", placeholder="e.g., 'productivity'")
