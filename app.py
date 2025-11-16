@@ -9,6 +9,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from bs4 import BeautifulSoup
 import re
+import io
+import base64
 
 # Configure page
 st.set_page_config(
@@ -18,18 +20,18 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# API Keys and Configuration
-API_KEYS = {
-    'rapidapi': [
-        "3f52b9a04fmsh50120f0c987f590p168854jsn841e06da4d93",
-        # Add more RapidAPI keys here if needed
-    ],
-    'megallm': "sk-mega-0a88bda64c454c2a3af0f8d6fce4577b998184d31516fd4c44b5828c1ab03137",
-    'lovable': "your-lovable-api-key"  # Replace with actual key
-}
-
-# API rotation counter
-API_COUNTER = {'rapidapi': 0}
+# Initialize session state for API keys
+if 'api_keys' not in st.session_state:
+    st.session_state.api_keys = {
+        'rapidapi': ["3f52b9a04fmsh50120f0c987f590p168854jsn841e06da4d93"],
+        'gemini': [],
+        'chatgpt': [],
+        'megallm': [],
+        'rapidapi_counter': 0,
+        'gemini_counter': 0,
+        'chatgpt_counter': 0,
+        'megallm_counter': 0
+    }
 
 class APIManager:
     """Manages API calls with rotation and rate limiting"""
@@ -41,11 +43,13 @@ class APIManager:
         
     def rotate_api_key(self, service):
         """Rotate API keys to avoid rate limits"""
-        if service == 'rapidapi':
-            keys = API_KEYS['rapidapi']
-            API_COUNTER['rapidapi'] = (API_COUNTER['rapidapi'] + 1) % len(keys)
-            return keys[API_COUNTER['rapidapi']]
-        return API_KEYS.get(service, '')
+        keys = st.session_state.api_keys.get(service, [])
+        if not keys:
+            return None
+            
+        counter_key = f"{service}_counter"
+        st.session_state.api_keys[counter_key] = (st.session_state.api_keys[counter_key] + 1) % len(keys)
+        return keys[st.session_state.api_keys[counter_key]]
     
     def make_request(self, url, headers=None, params=None, service='rapidapi'):
         """Make API request with rate limiting and retry logic"""
@@ -62,7 +66,9 @@ class APIManager:
             try:
                 # Rotate API key if needed
                 if headers and 'x-rapidapi-key' in headers:
-                    headers['x-rapidapi-key'] = self.rotate_api_key('rapidapi')
+                    api_key = self.rotate_api_key('rapidapi')
+                    if api_key:
+                        headers['x-rapidapi-key'] = api_key
                 
                 response = self.session.get(url, headers=headers, params=params, timeout=10)
                 self.last_call_time[service] = time.time()
@@ -95,7 +101,7 @@ class AmazonDataCollector:
         
         headers = {
             "x-rapidapi-host": "real-time-amazon-data.p.rapidapi.com",
-            "x-rapidapi-key": API_KEYS['rapidapi'][0]
+            "x-rapidapi-key": st.session_state.api_keys['rapidapi'][0]  # Will be rotated
         }
         
         params = {
@@ -130,7 +136,7 @@ class AmazonDataCollector:
         
         headers = {
             "x-rapidapi-host": "real-time-amazon-data.p.rapidapi.com",
-            "x-rapidapi-key": API_KEYS['rapidapi'][0]
+            "x-rapidapi-key": st.session_state.api_keys['rapidapi'][0]  # Will be rotated
         }
         
         params = {
@@ -150,7 +156,7 @@ class AmazonDataCollector:
         
         headers = {
             "x-rapidapi-host": "real-time-amazon-data.p.rapidapi.com",
-            "x-rapidapi-key": API_KEYS['rapidapi'][0]
+            "x-rapidapi-key": st.session_state.api_keys['rapidapi'][0]  # Will be rotated
         }
         
         params = {
@@ -197,12 +203,42 @@ class AIAnalyzer:
     def __init__(self):
         self.api_manager = APIManager()
     
-    def analyze_with_megallm(self, prompt):
-        """Analyze data using MegaLLM"""
-        url = "https://api.megallm.com/v1/chat/completions"
+    def analyze_with_gemini(self, prompt):
+        """Analyze data using Google Gemini"""
+        api_key = self.api_manager.rotate_api_key('gemini')
+        if not api_key:
+            return "No Gemini API key available. Please add one in the API Settings."
+        
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
         
         headers = {
-            "Authorization": f"Bearer {API_KEYS['megallm']}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "contents": [{"parts": [{"text": prompt}]}]
+        }
+        
+        try:
+            response = requests.post(url, headers=headers, json=data, timeout=10)
+            if response.status_code == 200:
+                result = response.json()
+                return result['candidates'][0]['content']['parts'][0]['text']
+        except Exception as e:
+            st.error(f"Gemini API Error: {str(e)}")
+        
+        return "Analysis unavailable"
+    
+    def analyze_with_chatgpt(self, prompt):
+        """Analyze data using OpenAI ChatGPT"""
+        api_key = self.api_manager.rotate_api_key('chatgpt')
+        if not api_key:
+            return "No ChatGPT API key available. Please add one in the API Settings."
+        
+        url = "https://api.openai.com/v1/chat/completions"
+        
+        headers = {
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
         
@@ -219,11 +255,41 @@ class AIAnalyzer:
                 result = response.json()
                 return result['choices'][0]['message']['content']
         except Exception as e:
-            st.error(f"AI Analysis Error: {str(e)}")
+            st.error(f"ChatGPT API Error: {str(e)}")
         
         return "Analysis unavailable"
     
-    def analyze_market_opportunity(self, keyword, products):
+    def analyze_with_megallm(self, prompt):
+        """Analyze data using MegaLLM"""
+        api_key = self.api_manager.rotate_api_key('megallm')
+        if not api_key:
+            return "No MegaLLM API key available. Please add one in the API Settings."
+        
+        url = "https://api.megallm.com/v1/chat/completions"
+        
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "model": "gpt-3.5-turbo",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 500,
+            "temperature": 0.7
+        }
+        
+        try:
+            response = requests.post(url, headers=headers, json=data, timeout=10)
+            if response.status_code == 200:
+                result = response.json()
+                return result['choices'][0]['message']['content']
+        except Exception as e:
+            st.error(f"MegaLLM API Error: {str(e)}")
+        
+        return "Analysis unavailable"
+    
+    def analyze_market_opportunity(self, keyword, products, ai_service="gemini"):
         """Analyze market opportunity using AI"""
         prompt = f"""
         Analyze the market opportunity for Amazon KDP books with keyword: "{keyword}"
@@ -239,9 +305,14 @@ class AIAnalyzer:
         5. Key insights
         """
         
-        return self.analyze_with_megallm(prompt)
+        if ai_service == "gemini":
+            return self.analyze_with_gemini(prompt)
+        elif ai_service == "chatgpt":
+            return self.analyze_with_chatgpt(prompt)
+        else:
+            return self.analyze_with_megallm(prompt)
     
-    def analyze_competitor(self, product):
+    def analyze_competitor(self, product, ai_service="gemini"):
         """Analyze a competitor using AI"""
         prompt = f"""
         Analyze this Amazon KDP competitor:
@@ -258,7 +329,12 @@ class AIAnalyzer:
         4. Improvement opportunities
         """
         
-        return self.analyze_with_megallm(prompt)
+        if ai_service == "gemini":
+            return self.analyze_with_gemini(prompt)
+        elif ai_service == "chatgpt":
+            return self.analyze_with_chatgpt(prompt)
+        else:
+            return self.analyze_with_megallm(prompt)
 
 class TrendTracker:
     """Tracks trends using Google Trends data"""
@@ -298,6 +374,114 @@ def init_components():
         'tracker': TrendTracker()
     }
 
+# API Settings Page
+def api_settings_page():
+    st.header("🔑 API Settings")
+    st.markdown("Manage your API keys for different services")
+    
+    # RapidAPI Keys
+    st.subheader("RapidAPI Keys")
+    rapidapi_keys = st.text_area(
+        "Enter RapidAPI Keys (one per line):",
+        value="\n".join(st.session_state.api_keys['rapidapi']),
+        help="Get your keys from https://rapidapi.com/hub"
+    )
+    st.session_state.api_keys['rapidapi'] = [key.strip() for key in rapidapi_keys.split('\n') if key.strip()]
+    
+    # Gemini API Keys
+    st.subheader("Google Gemini API Keys")
+    gemini_keys = st.text_area(
+        "Enter Gemini API Keys (one per line):",
+        value="\n".join(st.session_state.api_keys['gemini']),
+        help="Get your keys from https://makersuite.google.com/app/apikey"
+    )
+    st.session_state.api_keys['gemini'] = [key.strip() for key in gemini_keys.split('\n') if key.strip()]
+    
+    # ChatGPT API Keys
+    st.subheader("OpenAI ChatGPT API Keys")
+    chatgpt_keys = st.text_area(
+        "Enter ChatGPT API Keys (one per line):",
+        value="\n".join(st.session_state.api_keys['chatgpt']),
+        help="Get your keys from https://platform.openai.com/api-keys"
+    )
+    st.session_state.api_keys['chatgpt'] = [key.strip() for key in chatgpt_keys.split('\n') if key.strip()]
+    
+    # MegaLLM API Keys
+    st.subheader("MegaLLM API Keys")
+    megallm_keys = st.text_area(
+        "Enter MegaLLM API Keys (one per line):",
+        value="\n".join(st.session_state.api_keys['megallm']),
+        help="Get your keys from https://megallm.com"
+    )
+    st.session_state.api_keys['megallm'] = [key.strip() for key in megallm_keys.split('\n') if key.strip()]
+    
+    # File Upload
+    st.subheader("Upload API Keys File")
+    uploaded_file = st.file_uploader(
+        "Upload a file with API keys (TXT, CSV, or JSON)",
+        type=["txt", "csv", "json"]
+    )
+    
+    if uploaded_file is not None:
+        try:
+            # Read file content
+            content = uploaded_file.getvalue().decode("utf-8")
+            
+            # Parse based on file type
+            if uploaded_file.name.endswith('.json'):
+                data = json.loads(content)
+                if 'rapidapi' in data:
+                    st.session_state.api_keys['rapidapi'].extend(data['rapidapi'])
+                if 'gemini' in data:
+                    st.session_state.api_keys['gemini'].extend(data['gemini'])
+                if 'chatgpt' in data:
+                    st.session_state.api_keys['chatgpt'].extend(data['chatgpt'])
+                if 'megallm' in data:
+                    st.session_state.api_keys['megallm'].extend(data['megallm'])
+            else:
+                # For TXT and CSV, assume each line is an API key
+                lines = [line.strip() for line in content.split('\n') if line.strip()]
+                for line in lines:
+                    if 'rapidapi' in line.lower():
+                        key = line.split(':', 1)[1].strip() if ':' in line else line.strip()
+                        st.session_state.api_keys['rapidapi'].append(key)
+                    elif 'gemini' in line.lower():
+                        key = line.split(':', 1)[1].strip() if ':' in line else line.strip()
+                        st.session_state.api_keys['gemini'].append(key)
+                    elif 'chatgpt' in line.lower() or 'openai' in line.lower():
+                        key = line.split(':', 1)[1].strip() if ':' in line else line.strip()
+                        st.session_state.api_keys['chatgpt'].append(key)
+                    elif 'megallm' in line.lower():
+                        key = line.split(':', 1)[1].strip() if ':' in line else line.strip()
+                        st.session_state.api_keys['megallm'].append(key)
+            
+            st.success("API keys uploaded successfully!")
+        except Exception as e:
+            st.error(f"Error processing file: {str(e)}")
+    
+    # Display current status
+    st.subheader("Current API Keys Status")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("RapidAPI Keys", len(st.session_state.api_keys['rapidapi']))
+    with col2:
+        st.metric("Gemini Keys", len(st.session_state.api_keys['gemini']))
+    with col3:
+        st.metric("ChatGPT Keys", len(st.session_state.api_keys['chatgpt']))
+    with col4:
+        st.metric("MegaLLM Keys", len(st.session_state.api_keys['megallm']))
+    
+    # AI Service Selection
+    st.subheader("AI Service Selection")
+    ai_service = st.selectbox(
+        "Select AI service for analysis:",
+        ["gemini", "chatgpt", "megallm"],
+        index=0,
+        help="This will be used for AI-powered analysis"
+    )
+    st.session_state.ai_service = ai_service
+
 # Main UI
 def main():
     components = init_components()
@@ -310,6 +494,7 @@ def main():
     page = st.sidebar.selectbox(
         "Select Tool",
         [
+            "🔑 API Settings",
             "🔍 Category Finder",
             "📊 Market Research",
             "🔑 Keyword Research",
@@ -319,15 +504,20 @@ def main():
         ]
     )
     
+    # Get AI service selection
+    ai_service = st.session_state.get('ai_service', 'gemini')
+    
     # Main content
-    if page == "🔍 Category Finder":
+    if page == "🔑 API Settings":
+        api_settings_page()
+    elif page == "🔍 Category Finder":
         category_finder_page(components)
     elif page == "📊 Market Research":
-        market_research_page(components)
+        market_research_page(components, ai_service)
     elif page == "🔑 Keyword Research":
         keyword_research_page(components)
     elif page == "👥 Competitor Analysis":
-        competitor_analysis_page(components)
+        competitor_analysis_page(components, ai_service)
     elif page == "📈 Top Sellers Tracker":
         top_sellers_page(components)
     elif page == "📈 Trend Analysis":
@@ -369,7 +559,7 @@ def category_finder_page(components):
             else:
                 st.warning("No categories found. Try a different keyword.")
 
-def market_research_page(components):
+def market_research_page(components, ai_service):
     st.header("📊 Market Research")
     st.markdown("Analyze market demand and competition for your niche")
     
@@ -391,7 +581,7 @@ def market_research_page(components):
                     
                     # AI Analysis
                     with st.spinner("AI analyzing market opportunity..."):
-                        ai_analysis = components['analyzer'].analyze_market_opportunity(keyword, products)
+                        ai_analysis = components['analyzer'].analyze_market_opportunity(keyword, products, ai_service)
                         st.subheader("🤖 AI Market Analysis")
                         st.write(ai_analysis)
                     
@@ -447,7 +637,7 @@ def keyword_research_page(components):
                 else:
                     st.warning("No data found. Try a different keyword.")
 
-def competitor_analysis_page(components):
+def competitor_analysis_page(components, ai_service):
     st.header("👥 Competitor Analysis")
     st.markdown("Analyze your competitors on Amazon KDP")
     
@@ -479,7 +669,7 @@ def competitor_analysis_page(components):
                         
                         # AI Analysis
                         with st.spinner("AI analyzing competitor..."):
-                            ai_analysis = components['analyzer'].analyze_competitor(details)
+                            ai_analysis = components['analyzer'].analyze_competitor(details, ai_service)
                             st.subheader("🤖 AI Analysis")
                             st.write(ai_analysis)
                         
